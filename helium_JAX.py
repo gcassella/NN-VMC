@@ -5,8 +5,7 @@ from jax.ops import index_add, index_update
 from functools import partial
 from jax.scipy.sparse.linalg import cg
 
-key = random.PRNGKey(0)
-key, subkey = random.split(key)
+from mcmc import init_mcmc
 
 class Wavefunction():
     """
@@ -64,63 +63,7 @@ class Wavefunction():
         self.pdf_eval = jit(lambda x: np.power(np.abs(self.eval(x)), 2))
 
 @partial(jit, static_argnums=(1,))
-def config_step(key, wf, config, config_prob, config_idx, step_size):
-    key, subkey = random.split(key)
-    move_proposal = random.normal(key, shape=(config.shape[1],))*step_size
-    proposal = index_add(config, config_idx%config.shape[0], move_proposal)
-    proposal_prob = wf.pdf_eval(proposal)
-
-    uniform = random.uniform(subkey)
-    accept = uniform < (proposal_prob / config_prob)
-
-    new_config = np.where(accept, proposal, config)
-    config_prob = np.where(accept, proposal_prob, config_prob)
-    return new_config, config_prob, config_idx+1
-
-@partial(jit, static_argnums=(1, 2, 3, 4))
-def get_configs(key, wf, n_iter, n_equi, step_size, initial_config):
-    """
-    Carries out Metropolis-Hastings sampling according to the distribution |`wf`|**2.0.
-    
-    Performs `n_equi` equilibriation steps and `n_iter` sampling steps.
-    """
-    
-    def mh_update(i, state):
-      key, config, prob, idx = state
-      _, key = random.split(key)
-      new_config, new_prob, new_idx = config_step(
-          key,
-          wf,
-          config,
-          prob,
-          idx,
-          step_size
-      )
-      return (key, new_config, new_prob, new_idx)
-
-    def mh_update_and_store(i, state):
-      key, config, prob, idx, configs = state
-      _, key = random.split(key)
-      new_config, new_prob, new_idx = config_step(
-          key,
-          wf,
-          config,
-          prob,
-          idx,
-          step_size
-      )
-      new_configs = index_update(configs, idx, new_config)
-      return (key, new_config, new_prob, new_idx, new_configs)
-
-    prob = wf.pdf_eval(initial_config)
-    key, config, prob, idx = jax.lax.fori_loop(0, n_equi, mh_update, (key, initial_config, prob, 0))
-    init_configs = np.zeros((n_iter, *initial_config.shape))
-    key, config, prob, idx, configs = jax.lax.fori_loop(0, n_iter, mh_update_and_store, (key, config, prob, 0, init_configs))
-
-    return configs
-
-@partial(jit, static_argnums=(1,))
-def itime_hamiltonian(config, wf, tau=0.01):
+def itime_hamiltonian(config, wf, tau=0.1):
     n_electron = config.shape[0]
     curr_wf = wf.eval(config)
     acc = 0
@@ -138,10 +81,6 @@ def itime_hamiltonian(config, wf, tau=0.01):
     # Forget about nucleus - nucleus energy FOR NOW
 
     return 1-tau*acc
-
-# I don't like this but i can't think of a more elegant way of evaluating
-# these operators atm without writing custom code for the ML wavefunction
-# that unrolls the parameter list
 
 @partial(jit, static_argnums=(1,))
 def sr_op_ml(config, wf):
@@ -187,7 +126,7 @@ def monte_carlo(configs, op, wf):
     Returns the expectation value, variance and a list of the sampled values {O_i}
     """
 
-    samp_rate = 100
+    samp_rate = 8
     walker_values = vmap(lambda config: op(config, wf))(configs)
     op_output_shape = walker_values[0].shape
     num_blocks = (walker_values.shape[0]//samp_rate)
@@ -197,11 +136,6 @@ def monte_carlo(configs, op, wf):
     op_expec = np.mean(block_means, axis=0)
     op_var = 1/(k*(k-1))*np.sum(np.power(block_means - op_expec, 2), axis=0)
     return op_expec, op_var
-
-# config generation and monte carlo integral evaluation mapped over n_chains
-# mcmc walkers
-run_mcmc = vmap(get_configs, in_axes=(0, None, None, None, None, 0), out_axes=0)
-run_int = vmap(monte_carlo, in_axes=(0, None, None), out_axes=0)
 
 def reduce_mc_outs(outs):
     """
@@ -245,12 +179,8 @@ def predict(x, params):
   outputs = np.dot(final_w, activations) + final_b
   return outputs[0]
  
-layer_sizes = [3, 12, 12, 1]
-key, subkey = random.split(key)
-params = init_network_params(layer_sizes, key)
-
 def nn_hylleraas(x, params):
-    r = np.linalg.norm(x, axis=1)
+    r = np.linalg.norm(x, axis=-1)
     r1 = r[0]
     r2 = r[1]
 
@@ -259,60 +189,86 @@ def nn_hylleraas(x, params):
     u = np.linalg.norm(np.subtract(x[1], x[0]))
     return np.exp(-2*s)*(1 + 0.5*u*np.exp(-u))*predict(x, params)
 
-nn_hylleraas_wf = Wavefunction(nn_hylleraas, params)
+if __name__ == '__main__':
+    key = random.PRNGKey(0)
+    key, subkey = random.split(key)
 
-n_equi = 1000
-n_iter = 10000
-n_chains = 300
-xis = random.uniform(key, (n_chains, 2, 3))
-keys = random.split(key, n_chains+1)
-ml_wf = Wavefunction(nn_hylleraas, params)
+    # Initialize wavefunction
 
-p_wrapped = params
+    layer_sizes = [3, 12, 12, 1]
+    key, subkey = random.split(key)
+    params = init_network_params(layer_sizes, key)
+    ml_wf = Wavefunction(nn_hylleraas, params)
 
-for i in range(400):
-  print(i)
-  keys = random.split(keys[-1], n_chains+1)
-  configs = run_mcmc(keys[:-1], ml_wf, n_iter, n_equi, 0.5, xis)
-  E_E, E_V = reduce_mc_outs(run_int(configs, local_energy, ml_wf))
+    # Initialize MCMC
+    
+    n_equi = 256
+    n_iter = 256
+    n_chains = 1024
+    step_size = 0.3
 
-  def odotx(x):
-      """
-      Calculates the value of $S_{ij}\cdot x_j$ stochastically. 
-      
-      This is VERY inefficient, because we don't store the stochastic evaluations 
-      of the gradlogs inbetween evaluations. However, with the interface that JAX
-      uses for conjugate gradient, I can't currently think of cute way of
-      doing this (I can think of some very messy ways).
-      """
+    run_mcmc, mcmc_params = init_mcmc(lambda p, c: np.log(np.abs(nn_hylleraas(c, p))), step_size, n_equi, n_iter)
+    key, subkey = jax.random.split(key)
+    #configs, accepts, mcmc_params = run_mcmc(subkey, wf_params, initial_config, mcmc_params)
 
-      @partial(jit, static_argnums=(1,))
-      def op(c, w):
-        gradlog = w.p_gradlog_eval(c)
-        gradlog = np.concatenate((np.array([1]), np.concatenate(tuple(np.concatenate((glw.flatten(), gb.flatten())) for (glw, gb) in gradlog))))
+    # Create vmapped MCMC funcs for n_chains
 
-        return np.multiply(gradlog, np.dot(gradlog, x))
+    batch_run_mcmc = vmap(run_mcmc, in_axes=(0, None, 0, 0), out_axes=(0, 0, 0))
+    run_int_batch = vmap(monte_carlo, in_axes=(0, None, None), out_axes=0)
 
-      E, V = reduce_mc_outs(run_int(configs, op, ml_wf))
-      return E
+    # Initialize configs
 
-  sr_E, sr_V = reduce_mc_outs(run_int(configs, sr_op_ml, ml_wf))
+    batch_configs = np.expand_dims(random.normal(subkey, (n_chains, 2, 3)), 1)
+    keys = random.split(key, n_chains+1)
+    # Dirty dirty hack
+    batch_mcmc_params = np.array([mcmc_params for i in range(n_chains)])
 
-  dps, _ = cg(odotx, sr_E)
+    p_wrapped = params
 
-  # Bit of a rigmarole to flatten / unflatten the NN parameters
-  p_flat = np.concatenate(tuple(np.concatenate((w.flatten(), b.flatten())) for (w, b) in p_wrapped))
-  dps = dps[1:] / dps[0]
-  p_flat = np.add(p_flat, dps)
+    for i in range(4000):
+      print(i)
+      keys = random.split(keys[-1], n_chains+1)
+      batch_configs, batch_accepts, batch_mcmc_params = batch_run_mcmc(keys[:-1], p_wrapped, batch_configs[:, -1, :, :], batch_mcmc_params)
 
-  sizes = layer_sizes
-  idx = 0
-  p_wrapped = []
-  for m, n in zip(sizes[:-1], sizes[1:]):
-    p_wrapped.append(
-        [p_flat[idx:idx + m*n].reshape((n, m)), p_flat[idx + m*n:idx + (m+1)*(n)]]
-    )
-    idx += (m+1)*(n)
+      E_E, E_V = reduce_mc_outs(run_int_batch(batch_configs, local_energy, ml_wf))
 
-  ml_wf = Wavefunction(nn_hylleraas, p_wrapped)
-  print("{} pm {}".format(E_E, np.sqrt(E_V)))
+      def odotx(x):
+          """
+          Calculates the value of $S_{ij}\cdot x_j$ stochastically. 
+
+          This is VERY inefficient, because we don't store the stochastic evaluations 
+          of the gradlogs inbetween evaluations. However, with the interface that JAX
+          uses for conjugate gradient, I can't currently think of cute way of
+          doing this (I can think of some very messy ways).
+          """
+
+          @partial(jit, static_argnums=(1,))
+          def op(c, w):
+            gradlog = w.p_gradlog_eval(c)
+            gradlog = np.concatenate((np.array([1]), np.concatenate(tuple(np.concatenate((glw.flatten(), gb.flatten())) for (glw, gb) in gradlog))))
+
+            return np.multiply(gradlog, np.dot(gradlog, x))
+
+          E, V = reduce_mc_outs(run_int_batch(batch_configs, op, ml_wf))
+          return E
+
+      sr_E, sr_V = reduce_mc_outs(run_int_batch(batch_configs, sr_op_ml, ml_wf))
+
+      dps, _ = cg(odotx, sr_E)
+
+      # Bit of a rigmarole to flatten / unflatten the NN parameters
+      p_flat = np.concatenate(tuple(np.concatenate((w.flatten(), b.flatten())) for (w, b) in p_wrapped))
+      dps = dps[1:] / dps[0]
+      p_flat = np.add(p_flat, dps)
+
+      sizes = layer_sizes
+      idx = 0
+      p_wrapped = []
+      for m, n in zip(sizes[:-1], sizes[1:]):
+        p_wrapped.append(
+            [p_flat[idx:idx + m*n].reshape((n, m)), p_flat[idx + m*n:idx + (m+1)*(n)]]
+        )
+        idx += (m+1)*(n)
+
+      ml_wf = Wavefunction(nn_hylleraas, p_wrapped)
+      print("{} pm {}".format(E_E, np.sqrt(E_V)))
