@@ -40,10 +40,10 @@ def gen_energy_gradient(wf):
     def energy_grad(p, c, local_energy_exp, local_energy_op):
         el = local_energy_op(p, c)
         log_grad_val = log_grad(p, c)
-        
-        return jax.tree_util.tree_map(
-            lambda x: (el - local_energy_exp)*x,
+        out = jax.tree_util.tree_map(
+            lambda x: jnp.multiply((el - local_energy_exp), x),
             log_grad_val
         )
+        return out
 
     return energy_grad

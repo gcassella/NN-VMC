@@ -3,6 +3,7 @@ import jax
 from jax import random, vmap, jit
 from jax.scipy.sparse.linalg import cg
 
+from functools import partial
 from jax.experimental import optimizers
 
 from mcmc import init_mcmc
@@ -14,7 +15,7 @@ import pyblock
 # for a dense neural network layer
 def random_layer_params(m, n, key, scale=1):
   w_key, b_key = random.split(key)
-  return [scale * random.normal(w_key, (n, m)), scale * random.normal(b_key, (n,))]
+  return (scale * random.normal(w_key, (n, m)), scale * random.normal(b_key, (n,)))
 
 # Initialize all layers for a fully-connected neural network with sizes "sizes"
 def init_network_params(sizes, key):
@@ -62,8 +63,8 @@ if __name__ == '__main__':
     # Initialize MCMC
     
     n_equi = 2048
-    n_iter = 32
-    n_chains = 512
+    n_iter = 128
+    n_chains = 1024
     step_size = 0.3
 
     run_mcmc, mcmc_params = init_mcmc(lambda p, c: np.log(np.abs(nn_hylleraas(p, c))), step_size, n_equi, n_iter)
@@ -77,7 +78,7 @@ if __name__ == '__main__':
     local_energy = gen_local_energy(nn_hylleraas)
     energy_grad = gen_energy_gradient(nn_hylleraas)
     batch_local_energy = vmap(local_energy, in_axes=(None, 0))
-    batch_energy_grad = vmap(energy_grad, in_axes=(None, 0, None, None))
+    batch_energy_grad = vmap(energy_grad, in_axes=(None, 0, None, None), out_axes=0)
 
     # Initialize configs
 
@@ -104,9 +105,10 @@ if __name__ == '__main__':
         energies = batch_local_energy(opt_get_params(opt_state), batch_configs_flat)
         stats = pyblock.blocking.reblock(energies)
         optimal_block = pyblock.blocking.find_optimal_block(batch_configs_flat.shape[0], stats)[0]
-        grads = batch_energy_grad(wf_params, batch_configs_flat, stats[optimal_block].mean, local_energy)
+        batch_grad = batch_energy_grad(wf_params, batch_configs_flat, stats[optimal_block].mean, local_energy)
+        grad = jax.tree_util.tree_map(partial(np.mean, axis=0), batch_grad)
 
-        opt_state = opt_update(i, grads, opt_state)
+        opt_state = opt_update(i, grad, opt_state)
 
         return opt_state, stats[optimal_block].mean, batch_configs, batch_mcmc_params
 
