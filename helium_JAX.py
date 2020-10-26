@@ -99,19 +99,19 @@ if __name__ == '__main__':
             prev_configs[:, -1, :, :], 
             prev_mcmc_params
         )
-        batch_configs = np.concatenate(tuple(batch_configs))
+        batch_configs_flat = np.concatenate(tuple(batch_configs))
 
-        energies = batch_local_energy(opt_get_params(opt_state), batch_configs)
+        energies = batch_local_energy(opt_get_params(opt_state), batch_configs_flat)
         stats = pyblock.blocking.reblock(energies)
-        optimal_block = pyblock.blocking.find_optimal_block(batch_configs.shape[0], stats)[0]
-        grads = batch_energy_grad(wf_params, batch_configs, stats[optimal_block].mean, local_energy)
+        optimal_block = pyblock.blocking.find_optimal_block(batch_configs_flat.shape[0], stats)[0]
+        grads = batch_energy_grad(wf_params, batch_configs_flat, stats[optimal_block].mean, local_energy)
 
         opt_state = opt_update(i, grads, opt_state)
 
-        return opt_state, stats[optimal_block].mean
+        return opt_state, stats[optimal_block].mean, batch_configs, batch_mcmc_params
 
     for i in range(4000):
-      opt_state, value = step(i, subkey, batch_configs, batch_mcmc_params, opt_state)
+      opt_state, value, batch_configs, batch_mcmc_params = step(i, subkey, batch_configs, batch_mcmc_params, opt_state)
       print("Energy at step {} : {}".format(i, value))
 
       key, subkey = jax.random.split(key)
