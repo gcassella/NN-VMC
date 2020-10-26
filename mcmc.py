@@ -24,7 +24,7 @@ def init_mcmc(wf, step_size, n_equi, n_iter):
         key, subkey = jax.random.split(key)
         move_proposal = jax.random.normal(subkey, shape=(config.shape[1],))*mcmc_params[mcmc_pmap["step_size"]]
         proposal = jax.ops.index_add(config, 
-                                     mcmc_params[mcmc_pmap["n_step"]].astype(int)%config.shape[0], 
+                                     mcmc_params[mcmc_pmap["n_step"]].astype(jnp.uint32)%config.shape[0], 
                                      move_proposal)
         proposal_prob = pdf(wf_params, proposal)
 
@@ -80,8 +80,8 @@ def init_mcmc(wf, step_size, n_equi, n_iter):
 
         key, subkey = jax.random.split(key)
         key, config, mcmc_params_new = jax.lax.fori_loop(
-            0, 
-            (mcmc_params[mcmc_pmap["n_equi"]]).astype(int), 
+            jnp.uint32(0), 
+            (mcmc_params[mcmc_pmap["n_equi"]]).astype(jnp.uint32), 
             mh_update, 
             (subkey, initial_config, mcmc_params_new)
         )
@@ -90,8 +90,8 @@ def init_mcmc(wf, step_size, n_equi, n_iter):
         config_buffer = jnp.zeros((n_iter, *initial_config.shape))
         key, subkey = jax.random.split(key)
         key, config, mcmc_params_new, config_buffer, accept_buffer = jax.lax.fori_loop(
-            0, 
-            (mcmc_params[mcmc_pmap["n_iter"]]).astype(int), 
+            jnp.uint32(0), 
+            (mcmc_params[mcmc_pmap["n_iter"]]).astype(jnp.uint32), 
             mh_update_and_store, 
             (subkey, config, mcmc_params_new, config_buffer, accept_buffer)
         )
