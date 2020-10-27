@@ -11,45 +11,7 @@ from ops import gen_local_energy, gen_energy_gradient
 
 import pyblock
 
-# A helper function to randomly initialize weights and biases
-# for a dense neural network layer
-def random_layer_params(m, n, key, scale=1):
-  w_key, b_key = random.split(key)
-  return (scale * random.normal(w_key, (n, m)), scale * random.normal(b_key, (n,)))
-
-# Initialize all layers for a fully-connected neural network with sizes "sizes"
-def init_network_params(sizes, key):
-  keys = random.split(key, len(sizes))
-  return [random_layer_params(m, n, k) for m, n, k in zip(sizes[:-1], sizes[1:], keys)]
-
-def tanh(x):
-    return np.tanh(x)
-
-def predict(p, c):
-  # per-example predictions
-  r = np.linalg.norm(c, axis=1)
-  r1 = r[0]
-  r2 = r[1]
-  u = np.linalg.norm(np.subtract(c[1], c[0]))
-
-  activations = np.array([r1, r2, u])
-  for w, b in p[:-1]:
-    outputs = np.dot(w, activations) + b
-    activations = tanh(outputs)
-  
-  final_w, final_b = p[-1]
-  outputs = np.dot(final_w, activations) + final_b
-  return outputs[0]
- 
-def nn_hylleraas(p, c):
-    r = np.linalg.norm(c, axis=-1)
-    r1 = r[0]
-    r2 = r[1]
-
-    s = r1 + r2
-    t = r1 - r2
-    u = np.linalg.norm(np.subtract(c[1], c[0]))
-    return np.exp(-2*s)*(1 + 0.5*u*np.exp(-u))*predict(p, c)
+from wavefunction import init_network_params, nn_hylleraas
 
 if __name__ == '__main__':
     key = random.PRNGKey(0)
@@ -63,15 +25,16 @@ if __name__ == '__main__':
     # Initialize MCMC
     
     n_equi = 2048
-    n_iter = 128
+    n_iter = 16
     n_chains = 1024
     step_size = 0.3
 
-    run_mcmc, mcmc_params = init_mcmc(lambda p, c: np.log(np.abs(nn_hylleraas(p, c))), step_size, n_equi, n_iter)
+    run_mcmc, run_burnin = init_mcmc(lambda p, c: np.log(np.abs(nn_hylleraas(p, c))), step_size, n_equi, n_iter)
 
     # Create vmapped MCMC funcs for n_chains
 
-    batch_run_mcmc = vmap(run_mcmc, in_axes=(0, None, 0, 0), out_axes=(0, 0, 0))
+    batch_run_burnin = vmap(run_burnin, in_axes=(0, None, 0))
+    batch_run_mcmc = vmap(run_mcmc, in_axes=(0, None, 0), out_axes=(0, 0))
 
     # Create local ops and vmapped versions
 
@@ -80,25 +43,29 @@ if __name__ == '__main__':
     batch_local_energy = vmap(local_energy, in_axes=(None, 0))
     batch_energy_grad = vmap(energy_grad, in_axes=(None, 0, None, None), out_axes=0)
 
-    # Initialize configs
+    # Initialize configs and run burn-in
 
-    batch_configs = np.expand_dims(random.normal(subkey, (n_chains, 2, 3)), 1)
+    batch_configs = random.normal(subkey, (n_chains, 2, 3))
     key, subkey = random.split(key)
-    batch_mcmc_params = np.array([mcmc_params for i in range(n_chains)])
+
+    keys = random.split(subkey, n_chains)
+    batch_configs = batch_run_burnin(keys, wf_params, batch_configs)
+    batch_configs = np.expand_dims(batch_configs, 1)
 
     # Initialize optimizer
 
-    opt_init, opt_update, opt_get_params = optimizers.adam(1e-2)
+    lr = lambda t: 1.0 / (1.0e4 + t)
+    opt_init, opt_update, opt_get_params = optimizers.adam(lr)
     opt_state = opt_init(wf_params)
 
-    def step(i, key, prev_configs, prev_mcmc_params, opt_state):
+    # Optimization step
+    def step(i, key, prev_configs, opt_state):
         keys = random.split(key, n_chains+1)
 
-        batch_configs, batch_accepts, batch_mcmc_params = batch_run_mcmc(
+        batch_configs, batch_accepts = batch_run_mcmc(
             keys[:-1], 
             opt_get_params(opt_state), 
-            prev_configs[:, -1, :, :], 
-            prev_mcmc_params
+            prev_configs[:, -1, :, :]
         )
         batch_configs_flat = np.concatenate(tuple(batch_configs))
 
@@ -110,11 +77,13 @@ if __name__ == '__main__':
 
         opt_state = opt_update(i, grad, opt_state)
 
-        return opt_state, stats[optimal_block].mean, batch_configs, batch_mcmc_params
+        accept_rate = np.sum(batch_accepts) / batch_configs_flat.shape[0]
+
+        return opt_state, stats[optimal_block], batch_configs, accept_rate
 
     for i in range(4000):
-      opt_state, value, batch_configs, batch_mcmc_params = step(i, subkey, batch_configs, batch_mcmc_params, opt_state)
-      print("Energy at step {} : {}".format(i, value))
+      opt_state, stats, batch_configs, accept_rate = step(i, subkey, batch_configs, opt_state)
+      print("Energy at step {} : {} pm {}  acceptance rate {}".format(i, stats.mean, stats.std_err, accept_rate))
 
       key, subkey = jax.random.split(key)
       
