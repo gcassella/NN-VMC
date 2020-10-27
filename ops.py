@@ -47,3 +47,30 @@ def gen_energy_gradient(wf):
         return out
 
     return energy_grad
+
+def gen_sr_operators(wf):
+    log_grad = lambda p, c: jax.grad(lambda p, c: jnp.log(jnp.abs(wf(p, c))))(p, c)
+    def sr_op(p, c, local_energy_op, tau):
+        log_grad_flat = jnp.concatenate(tuple(jnp.concatenate((w.flatten(), b.flatten())) for (w, b) in log_grad(p, c)))
+        log_grad_flat = jnp.concatenate((jnp.array([1]), log_grad_flat))
+
+        return jnp.multiply((1.0 - local_energy_op(p, c)*tau), log_grad_flat)
+
+    def ovp(p, c, x):
+        log_grad_flat = jnp.concatenate(tuple(jnp.concatenate((w.flatten(), b.flatten())) for (w, b) in log_grad(p, c)))
+        log_grad_flat = jnp.concatenate((jnp.array([1]), log_grad_flat))
+
+        return jnp.multiply(log_grad_flat, jnp.dot(log_grad_flat, x))
+
+    def rewrap(p, layer_sizes):
+        idx = 0
+        p_wrapped = []
+        for m, n in zip(layer_sizes[:-1], layer_sizes[1:]):
+          p_wrapped.append(
+              (p[idx:idx + m*n].reshape((n, m)), p[idx + m*n:idx + (m+1)*(n)])
+          )
+          idx += (m+1)*(n)
+
+        return p_wrapped
+    
+    return sr_op, ovp, rewrap
