@@ -1,6 +1,7 @@
 import jax.numpy as jnp
 import jax
-from jax import random, vmap
+from jax import random, vmap, jit
+from jax.interpreters import xla
 #from jax.scipy.sparse.linalg import cg
 
 from scipy.sparse.linalg import cg, LinearOperator
@@ -25,7 +26,7 @@ if __name__ == '__main__':
     # Initialize MCMC
     
     n_equi = 2048
-    n_iter = 512
+    n_iter = 16
     n_chains = 4096
     step_size = 0.3
 
@@ -41,10 +42,10 @@ if __name__ == '__main__':
     local_energy = gen_local_energy(nn_hylleraas)
     energy_grad = gen_energy_gradient(nn_hylleraas)
     sr_op, ovp, rewrap = gen_sr_operators(nn_hylleraas)
-    batch_local_energy = vmap(local_energy, in_axes=(None, 0))
-    batch_energy_grad = vmap(energy_grad, in_axes=(None, 0, None, None), out_axes=0)
-    batch_sr_op = vmap(sr_op, in_axes=(None, 0, None, None), out_axes=0)
-    batch_ovp = vmap(ovp, in_axes=(None, 0, None), out_axes=0)
+    batch_local_energy = jit(vmap(jit(local_energy, static_argnums=(0,)), in_axes=(None, 0)))
+    batch_energy_grad = jit(vmap(jit(energy_grad, static_argnums=(0, 2, 3,)), in_axes=(None, 0, None, None), out_axes=0))
+    batch_sr_op = jit(vmap(jit(sr_op, static_argnums=(0, 2, 3,)), in_axes=(None, 0, None, None), out_axes=0), static_argnums=(2,))
+    batch_ovp = jit(vmap(jit(ovp, static_argnums=(0,)), in_axes=(None, 0, None), out_axes=0))
 
     # Initialize configs and run burn-in
 
@@ -89,8 +90,10 @@ if __name__ == '__main__':
 
       wf_params = jax.tree_util.tree_multimap(lambda x, *r: jnp.add(x, *r), wf_params, dp)
 
-      if i % 100 == 0:
+      if i % 200 == 0:
         with open("nn_wf.par", "wb") as f:
           pickle.dump(wf_params, f)
+
+        xla._xla_callable.cache_clear()
       
       
