@@ -1,7 +1,10 @@
 import jax
+from jax._src.numpy.lax_numpy import ravel
 import jax.numpy as jnp
 
 from functools import partial
+
+from jax.flatten_util import ravel_pytree
 
 def hessian(f, x):
   _, hvp = jax.linearize(jax.grad(f), x)
@@ -49,30 +52,23 @@ def gen_energy_gradient(wf):
     return energy_grad
 
 def gen_sr_operators(wf):
-    log_grad = lambda p, c: jax.grad(lambda p, c: jnp.log(jnp.abs(wf(p, c))))(p, c)
+    log_grad = jax.jit(jax.grad(lambda p, c: jnp.log(jnp.abs(wf(p, c)))), static_argnums=(0,))
     def sr_op(p, c, local_energy_op, tau):
         lg = log_grad(p, c)
-        log_grad_flat = jnp.concatenate((lg[0], *tuple(jnp.concatenate((w.flatten(), b.flatten())) for (w, b) in lg[1])))
+        log_grad_flat, _ = ravel_pytree(lg)
         log_grad_flat = jnp.concatenate((jnp.array([1]), log_grad_flat))
 
         return jnp.multiply((1.0 - local_energy_op(p, c)*tau), log_grad_flat)
 
-    def ovp(p, c, x):
+    def ovp(p, c, x, eps):
         lg = log_grad(p, c)
-        log_grad_flat = jnp.concatenate((lg[0], *tuple(jnp.concatenate((w.flatten(), b.flatten())) for (w, b) in lg[1])))
+        log_grad_flat, _ = ravel_pytree(lg)
         log_grad_flat = jnp.concatenate((jnp.array([1]), log_grad_flat))
 
-        return jnp.multiply(log_grad_flat, jnp.dot(log_grad_flat, x))
+        return jnp.multiply(log_grad_flat, jnp.dot(log_grad_flat, x)) + eps*jnp.multiply(jnp.power(log_grad_flat, 2), x)
 
-    def rewrap(p, layer_sizes):
-        idx = 0
-        p_wrapped = []
-        for m, n in zip(layer_sizes[:-1], layer_sizes[1:]):
-          p_wrapped.append(
-              (p[idx:idx + m*n].reshape((n, m)), p[idx + m*n:idx + (m+1)*(n)])
-          )
-          idx += (m+1)*(n)
-
-        return p_wrapped
+    def get_rewrap(p):
+        _, f = ravel_pytree(p)
+        return f
     
-    return sr_op, ovp, rewrap
+    return sr_op, ovp, get_rewrap

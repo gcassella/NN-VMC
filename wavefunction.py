@@ -41,4 +41,4 @@ def nn_hylleraas(p, c):
     s = r1 + r2
     t = r1 - r2
     u = jnp.linalg.norm(jnp.subtract(c[1], c[0]))
-    return jnp.exp(-p[0][0]*s)*predict(p[1], c)
+    return jnp.exp(-p[0][0]*s)*(1 + 0.5*u*jnp.exp(-p[0][1]*u))*predict(p[1], c)

@@ -21,7 +21,8 @@ if __name__ == '__main__':
 
     layer_sizes = [3, 32, 32, 32, 1]
     key, subkey = random.split(key)
-    wf_params = (jnp.array([2.0]), init_network_params(layer_sizes, subkey))
+    wf_params = (jnp.array([2.0, 1.0]), init_network_params(layer_sizes, subkey))
+    #wf_params = pickle.load(open('nn_wf.par', 'rb'))
 
     # Initialize MCMC
     
@@ -29,6 +30,9 @@ if __name__ == '__main__':
     n_iter = 16
     n_chains = 4096
     step_size = 0.3
+    tau = 1e-3 # Stochastic reconfiguration imaginary 'time step'
+    eps = 1e-3 # Overlap matrix regularization factor
+    dt = 1e-2  # Regularization factor for parameter changes
 
     run_mcmc, run_burnin = init_mcmc(lambda p, c: jnp.log(jnp.abs(nn_hylleraas(p, c))), step_size, n_equi, n_iter)
 
@@ -42,10 +46,11 @@ if __name__ == '__main__':
     local_energy = gen_local_energy(nn_hylleraas)
     energy_grad = gen_energy_gradient(nn_hylleraas)
     sr_op, ovp, rewrap = gen_sr_operators(nn_hylleraas)
+    rewrap = rewrap(wf_params)
     batch_local_energy = jit(vmap(jit(local_energy, static_argnums=(0,)), in_axes=(None, 0)))
     batch_energy_grad = jit(vmap(jit(energy_grad, static_argnums=(0, 2, 3,)), in_axes=(None, 0, None, None), out_axes=0))
     batch_sr_op = jit(vmap(jit(sr_op, static_argnums=(0, 2, 3,)), in_axes=(None, 0, None, None), out_axes=0), static_argnums=(2,))
-    batch_ovp = jit(vmap(jit(ovp, static_argnums=(0,)), in_axes=(None, 0, None), out_axes=0))
+    batch_ovp = jit(vmap(jit(ovp, static_argnums=(0,3,)), in_axes=(None, 0, None, None), out_axes=0))
 
     # Initialize configs and run burn-in
 
@@ -64,8 +69,8 @@ if __name__ == '__main__':
             batch_configs[:, -1, :, :]
         )
       batch_configs_flat = jnp.concatenate(tuple(batch_configs))
-      sr_E = jnp.mean(batch_sr_op(wf_params, batch_configs_flat, local_energy, 1e-3), axis=0)
-      reduced_batch_ovp = lambda x: jnp.mean(batch_ovp(wf_params, batch_configs_flat, x), axis=0)
+      sr_E = jnp.mean(batch_sr_op(wf_params, batch_configs_flat, local_energy, tau), axis=0)
+      reduced_batch_ovp = lambda x: jnp.mean(batch_ovp(wf_params, batch_configs_flat, x, eps), axis=0)
 
       if i % 10 == 0:
         energies = batch_local_energy(wf_params, batch_configs_flat)
@@ -82,11 +87,8 @@ if __name__ == '__main__':
       A = LinearOperator((sr_E.shape[0], sr_E.shape[0]), matvec=reduced_batch_ovp)
 
       dp, _ = cg(A, sr_E, maxiter=100)
-      dp = dp[1:] / dp[0]
-      dp = (
-        dp[:wf_params[0].shape[0]],
-        rewrap(dp[wf_params[0].shape[0]:], layer_sizes)
-      )
+      dp = dt * dp[1:] / dp[0]
+      dp = rewrap(dp)
 
       wf_params = jax.tree_util.tree_multimap(lambda x, *r: jnp.add(x, *r), wf_params, dp)
 
