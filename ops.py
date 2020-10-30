@@ -39,7 +39,7 @@ def gen_local_energy(wf):
     return local_energy
 
 def gen_energy_gradient(wf):
-    log_grad = lambda p, c: jax.grad(lambda p, c: jnp.log(jnp.abs(wf(p, c))))(p, c)
+    log_grad = jax.grad(lambda p, c: jnp.log(jnp.abs(wf(p, c))))
     def energy_grad(p, c, local_energy_exp, local_energy_op):
         el = local_energy_op(p, c)
         log_grad_val = log_grad(p, c)
