@@ -8,7 +8,7 @@ from scipy.sparse.linalg import cg, LinearOperator
 
 from mcmc import init_mcmc
 from ops import *
-from wavefunction import init_network_params, nn_hylleraas
+from wavefunction import init_network_params, nn_hylleraas, hylleraas
 
 import pyblock
 import pickle
@@ -21,18 +21,18 @@ if __name__ == '__main__':
 
     layer_sizes = [3, 32, 32, 32, 1]
     key, subkey = random.split(key)
-    wf_params = (jnp.array([2.0, 1.0]), init_network_params(layer_sizes, subkey))
+    wf_params = (jnp.array([1.0]), init_network_params(layer_sizes, subkey))
     #wf_params = pickle.load(open('nn_wf.par', 'rb'))
 
     # Initialize MCMC
     
     n_equi = 2048
     n_iter = 16
-    n_chains = 4096
+    n_chains = 512
     step_size = 0.3
-    tau = 1e-3 # Stochastic reconfiguration imaginary 'time step'
+    tau = lambda i: 1e-3 # Stochastic reconfiguration imaginary 'time step'
     eps = 1e-3 # Overlap matrix regularization factor
-    dt = 1e-2  # Regularization factor for parameter changes
+    dt = lambda i: 1 / (1e4 + i) # Regularization factor for parameter changes
 
     run_mcmc, run_burnin = init_mcmc(lambda p, c: jnp.log(jnp.abs(nn_hylleraas(p, c))), step_size, n_equi, n_iter)
 
@@ -61,7 +61,7 @@ if __name__ == '__main__':
     batch_configs = batch_run_burnin(keys[:-1], wf_params, batch_configs)
     batch_configs = jnp.expand_dims(batch_configs, 1)
 
-    for i in range(4000):
+    for i in range(10000):
       keys = random.split(keys[-1], n_chains+1)
       batch_configs, batch_accepts = batch_run_mcmc(
             keys[:-1], 
@@ -69,7 +69,7 @@ if __name__ == '__main__':
             batch_configs[:, -1, :, :]
         )
       batch_configs_flat = jnp.concatenate(tuple(batch_configs))
-      sr_E = jnp.mean(batch_sr_op(wf_params, batch_configs_flat, local_energy, tau), axis=0)
+      sr_E = jnp.mean(batch_sr_op(wf_params, batch_configs_flat, local_energy, tau(i)), axis=0)
       reduced_batch_ovp = lambda x: jnp.mean(batch_ovp(wf_params, batch_configs_flat, x, eps), axis=0)
 
       if i % 10 == 0:
@@ -86,8 +86,8 @@ if __name__ == '__main__':
       
       A = LinearOperator((sr_E.shape[0], sr_E.shape[0]), matvec=reduced_batch_ovp)
 
-      dp, _ = cg(A, sr_E, maxiter=100)
-      dp = dt * dp[1:] / dp[0]
+      dp, _ = cg(A, sr_E)
+      dp = dt(i) * dp[1:] / dp[0]
       dp = rewrap(dp)
 
       wf_params = jax.tree_util.tree_multimap(lambda x, *r: jnp.add(x, *r), wf_params, dp)

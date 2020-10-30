@@ -1,10 +1,14 @@
 import jax.numpy as jnp
 import jax
 
+from jax import jit
+from functools import partial
+
 def init_mcmc(wf, step_size, n_equi, n_iter):
 
     pdf = lambda p, c: 2*wf(p, c)
 
+    @partial(jit, static_argnums=1,)
     def step_mcmc(key, wf_params, config, config_prob, idx):
         key, subkey = jax.random.split(key)
         move_proposal = jax.random.normal(subkey, shape=(config.shape[1],))*step_size
