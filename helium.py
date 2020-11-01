@@ -2,6 +2,8 @@ import jax.numpy as jnp
 import jax
 from jax import random, vmap, jit
 from jax.interpreters import xla
+from jax.experimental import optimizers
+
 #from jax.scipy.sparse.linalg import cg
 
 from scipy.sparse.linalg import cg, LinearOperator
@@ -12,6 +14,9 @@ from wavefunction import init_network_params, nn_hylleraas, hylleraas
 
 import pyblock
 import pickle
+
+import jax.profiler
+
 
 
 if __name__ == '__main__':
@@ -26,13 +31,22 @@ if __name__ == '__main__':
 
     # Initialize MCMC
     
-    n_equi = 2048
+    n_equi = 64
     n_iter = 16
     n_chains = 512
-    step_size = 0.3
-    tau = lambda i: 1e-3 # Stochastic reconfiguration imaginary 'time step'
-    eps = 1e-3 # Overlap matrix regularization factor
-    dt = lambda i: 1 / (1e4 + i) # Regularization factor for parameter changes
+    step_size = 0.5
+
+    # Cyclic learning rate parameters
+
+    min_lr = 1e-3
+    max_lr = 1e-2
+    step_lr = 1000
+    cycle = lambda i: jnp.floor(1 + i/(2*step_lr))
+    x = lambda i: jnp.abs(i / step_lr - 2*cycle(i) + 1)
+    tau = lambda i: min_lr + (max_lr - min_lr) * jnp.max(jnp.array([0, (1-x(i))])) # Stochastic reconfiguration imaginary 'time step'
+
+    eps = 0.0 # Overlap matrix regularization factor
+    dt = lambda i: 1.0 # Regularization factor for parameter changes
 
     run_mcmc, run_burnin = init_mcmc(lambda p, c: jnp.log(jnp.abs(nn_hylleraas(p, c))), step_size, n_equi, n_iter)
 
