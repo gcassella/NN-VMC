@@ -1,4 +1,5 @@
 import jax.numpy as jnp
+import numpy as np
 import jax
 from jax import random, vmap, jit
 from jax.interpreters import xla
@@ -19,7 +20,7 @@ if __name__ == '__main__':
 
     # Initialize wavefunction
 
-    layer_sizes = [3, 32, 32, 32, 1]
+    layer_sizes = [3, 64, 64, 64, 1]
     key, subkey = random.split(key)
     wf_params = (jnp.array([1.0]), init_network_params(layer_sizes, subkey))
     #wf_params = pickle.load(open('nn_wf.par', 'rb'))
@@ -29,10 +30,10 @@ if __name__ == '__main__':
     n_equi = 2048
     n_iter = 16
     n_chains = 512
-    step_size = 0.3
-    tau = lambda i: 1e-3 # Stochastic reconfiguration imaginary 'time step'
-    eps = 1e-3 # Overlap matrix regularization factor
-    dt = lambda i: 1 / (1e4 + i) # Regularization factor for parameter changes
+    step_size = 0.5
+    tau = lambda i: 1 / (1e2 + 0.1*i) # Stochastic reconfiguration imaginary 'time step'
+    eps = 0 # Overlap matrix regularization factor
+    dt = lambda i: 1 # Regularization factor for parameter changes
 
     run_mcmc, run_burnin = init_mcmc(lambda p, c: jnp.log(jnp.abs(nn_hylleraas(p, c))), step_size, n_equi, n_iter)
 
@@ -61,6 +62,8 @@ if __name__ == '__main__':
     batch_configs = batch_run_burnin(keys[:-1], wf_params, batch_configs)
     batch_configs = jnp.expand_dims(batch_configs, 1)
 
+    log = open("nn_wf.log", "a")
+
     for i in range(10000):
       keys = random.split(keys[-1], n_chains+1)
       batch_configs, batch_accepts = batch_run_mcmc(
@@ -72,7 +75,7 @@ if __name__ == '__main__':
       sr_E = jnp.mean(batch_sr_op(wf_params, batch_configs_flat, local_energy, tau(i)), axis=0)
       reduced_batch_ovp = lambda x: jnp.mean(batch_ovp(wf_params, batch_configs_flat, x, eps), axis=0)
 
-      if i % 10 == 0:
+      if i % 1 == 0:
         energies = batch_local_energy(wf_params, batch_configs_flat)
         stats = pyblock.blocking.reblock(energies)
         optimal_block = pyblock.blocking.find_optimal_block(batch_configs_flat.shape[0], stats)[0]
@@ -83,16 +86,20 @@ if __name__ == '__main__':
           stats[optimal_block].std_err, 
           accept_rate
         ))
+        log.write(
+          "{} {} {} {}\n".format(i, stats[optimal_block].mean, stats[optimal_block].std_err, accept_rate)
+        )
       
       A = LinearOperator((sr_E.shape[0], sr_E.shape[0]), matvec=reduced_batch_ovp)
 
-      dp, _ = cg(A, sr_E)
+      dp, _ = cg(A, sr_E, maxiter=500)
       dp = dt(i) * dp[1:] / dp[0]
       dp = rewrap(dp)
 
       wf_params = jax.tree_util.tree_multimap(lambda x, *r: jnp.add(x, *r), wf_params, dp)
 
       if i % 200 == 0:
+        log.flush()
         with open("nn_wf.par", "wb") as f:
           pickle.dump(wf_params, f)
 
