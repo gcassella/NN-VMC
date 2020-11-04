@@ -6,11 +6,6 @@ from functools import partial
 
 from jax.flatten_util import ravel_pytree
 
-def hessian(f, x):
-  _, hvp = jax.linearize(jax.grad(f), x)
-  basis = jnp.eye(jnp.prod(jnp.array([*x.shape]))).reshape(-1, *x.shape)
-  return jnp.stack([hvp(e) for e in basis]).reshape(x.shape + x.shape)
-
 def gen_local_energy(wf):
     hess = jax.jacfwd(jax.grad(wf, 1), 1)
     lapl_eval = lambda p, c: jnp.trace(hess(p, c).reshape(c.shape[0]*c.shape[1], c.shape[0]*c.shape[1]))
@@ -38,37 +33,28 @@ def gen_local_energy(wf):
 
     return local_energy
 
-def gen_energy_gradient(wf):
-    log_grad = jax.grad(lambda p, c: jnp.log(jnp.abs(wf(p, c))))
-    def energy_grad(p, c, local_energy_exp, local_energy_op):
-        el = local_energy_op(p, c)
-        log_grad_val = log_grad(p, c)
-        out = jax.tree_util.tree_map(
-            lambda x: jnp.multiply((el - local_energy_exp), x),
-            log_grad_val
-        )
-        return out
-
-    return energy_grad
-
-def gen_sr_operators(wf):
+def gen_grad_operators(wf):
     log_grad = jax.jit(jax.grad(lambda p, c: jnp.log(jnp.abs(wf(p, c)))), static_argnums=(0,))
-    def sr_op(p, c, local_energy_op, tau):
+    def grad_op(p, c, local_energy_op, local_energy_exp):
         lg = log_grad(p, c)
         log_grad_flat, _ = ravel_pytree(lg)
-        log_grad_flat = jnp.concatenate((jnp.array([1]), log_grad_flat))
 
-        return jnp.multiply((1.0 - local_energy_op(p, c)*tau), log_grad_flat)
+        return jnp.multiply((local_energy_exp - local_energy_op(p, c)), log_grad_flat)
 
-    def ovp(p, c, x, eps):
+    def lg_op(p,c):
         lg = log_grad(p, c)
         log_grad_flat, _ = ravel_pytree(lg)
-        log_grad_flat = jnp.concatenate((jnp.array([1]), log_grad_flat))
 
-        return jnp.multiply(log_grad_flat, jnp.dot(log_grad_flat, x)) + eps*jnp.multiply(jnp.power(log_grad_flat, 2), x)
+        return log_grad_flat
+
+    def ovp(p, c, x, eps, log_grad_exp):
+        lg = log_grad(p, c)
+        log_grad_flat, _ = ravel_pytree(lg)
+
+        return jnp.multiply(log_grad_flat - log_grad_exp, jnp.dot(log_grad_flat - log_grad_exp, x)) + eps*jax.ops.index_update(x, 0, 0.0)
 
     def get_rewrap(p):
         _, f = ravel_pytree(p)
         return f
     
-    return sr_op, ovp, get_rewrap
+    return grad_op, lg_op, ovp, get_rewrap
