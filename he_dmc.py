@@ -65,25 +65,29 @@ if __name__ == "__main__":
     import pyscf
     import pyqmc
 
-    from dask.distributed import Client, LocalCluster
-    ncore = 4
-    cluster = LocalCluster(n_workers=ncore, threads_per_worker=1)
-    client = Client(cluster)
-    #client = None
+    #from dask.distributed import Client, LocalCluster
+    #ncore = 4
+    #cluster = LocalCluster(n_workers=ncore, threads_per_worker=1)
+    #client = Client(cluster)
+    client = None
 
     nn_hylleraas_p = pickle.load(open('good_nn_wf.par', 'rb'))
     #hylleraas_p = [[0.9998273, 0.2546163, 0.1520364, -0.04904639], None]
     #simple_p = [1.6875]
     
-    wf = Wavefunction(hylleraas, nn_hylleraas_p)
+    wf = Wavefunction(nn_hylleraas, nn_hylleraas_p)
     nconfig = 1000
     
     mol = pyscf.gto.M(atom="He 0. 0. 0.")
  
     configs = pyqmc.initial_guess(mol, nconfig)
 
-    taus = np.array([0.001, 0.0025, 0.005, 0.01, 0.025, 0.05])
-    nsteps = np.array([50000, 20000, 10000, 5000, 2000, 1000])
+    T = 1000
+    T1 = int(8 * T / 9)
+    T2 = int(T / 9)
+
+    taus = np.array([0.02, 0.08])
+    nsteps = np.array([T1, T2])
     ELs = []
     EL_errs = []
 
